@@ -54,6 +54,12 @@ header-includes:
   - \usepackage{indentfirst}
   - \usepackage{float} # keep figures where there are in the text
   - \floatplacement{figure}{H} # keep figures where there are in the text
+  - \usepackage{caption}
+  - \captionsetup[figure]{
+      name=,
+      labelsep=none,
+      labelformat=empty
+    }
 ---
 
 # Сетевой симулятор - ns-2
@@ -224,6 +230,7 @@ Gentle RED расширяет RED тем, что добавляет дополн
 ![GRED](./image/004.png){#fig:004}
 
 Вычисляется следующим образом:
+
 $$
 p_{b} = \left\{ \begin{array}{cl}
 0, &  \  0 < \hat{q} \leq q_{min} \\
@@ -232,6 +239,247 @@ p_{b} = \left\{ \begin{array}{cl}
 1, &  \ \hat{q} \geqslant  q_{max} \\
 \end{array} \right.
 $$
+
+# RED на практике
+
+## Реализация на NS2
+
+Теперь перейдем к рассмотрению реализации алгоритма RED на NS2. Для удобства мы будем разделять исходный код программы на модули, а в самих модуляхи реализовывать отдельные моменты, необходимые для моделирования. 
+
+### main.tcl
+
+В данном файле мы задаем симулятор, создаем файлы трассировки и добавляем внешние модули, в которых будет реализовываться основная логика. В конце мы запускаем моделирование.
+
+```tcl
+set ns [new Simulator]
+
+set nf [open out.nam w]
+$ns namtrace-all $nf
+
+source "nodes.tcl"
+source "queue.tcl"
+source "plotWindow.tcl"
+source "modeling.tcl"
+source "finish.tcl"
+
+$ns run
+```
+
+### nodes.tcl
+
+Следующий файл отвечает за создание и соединение узлов. В нем мы задаем 2 маршрутизатора и 20 узлов на каждом конце, соединяем узлы и маршрутизаторы, устанавливаем определенный тип очереди и расставляем их на анимации.
+
+```tcl
+set node_(r0) [$ns node]
+set node_(r1) [$ns node]
+$node_(r0) color "red"
+$node_(r1) color "red"
+$node_(r0) label "red"
+
+set n 20
+
+for {set i 0} {$i < $n} {incr i} {
+        set node_(s$i) [$ns node]
+        $node_(s$i) color "blue"
+        $node_(s$i) label "ftp"
+        $ns duplex-link $node_(s$i) $node_(r0) 100Mb 20ms DropTail
+
+        set node_(s[expr $n + $i]) [$ns node]
+        $ns duplex-link $node_(s[expr $n + $i]) $node_(r1) 100Mb 20ms DropTail
+}
+
+$ns simplex-link $node_(r0) $node_(r1) 20Mb 15ms RED
+$ns simplex-link $node_(r1) $node_(r0) 15Mb 20ms DropTail
+
+$ns queue-limit $node_(r0) $node_(r1) 300
+$ns queue-limit $node_(r1) $node_(r0) 300
+
+
+for {set t 0} {$t < $n} {incr t} {
+        $ns color $t green
+        set tcp($t) [$ns create-connection TCP/Reno $node_(s$t) TCPSink $node_(s[expr $n + $t]) $t]
+        $tcp($t) set window_ 32
+        $tcp($t) set maxcwnd_ 32
+        $tcp($t) set packetsize_ 500
+        set ftp($t) [$tcp($t) attach-source FTP]
+}
+
+$ns simplex-link-op $node_(r0) $node_(r1) orient right
+$ns simplex-link-op $node_(r1) $node_(r0) orient left
+$ns simplex-link-op $node_(r0) $node_(r1) queuePos 0
+$ns simplex-link-op $node_(r1) $node_(r0) queuePos 0
+
+
+for {set m 0} {$m < $n} {incr m} {
+        $ns duplex-link-op $node_(s$m) $node_(r0) orient right
+        $ns duplex-link-op $node_(s[expr $n + $m]) $node_(r1) orient left
+}
+```
+
+### queue.tcl
+
+В данном файле мы настраиваем мониторы и параметры для алгоритма RED. А именно:
+
+ - `qlim_` - отвечает за максимальное и минимальное границы для среднего размера очереди
+
+ - `thresh_` - минимальная граница для среднего размера очереди в пакетах;
+
+ - `maxthresh_` - максимальноая граница для среднего размера очереди в пакетах;
+ 
+ - `q_weight_` - вес очереди, используется для вычисления среднего размера очереди
+ 
+ - `linterm_` - вероятность отбрасывания пакета
+
+ - `drop-tail_` - вместо механизма randomdrop используется механизм drop-tail в случае переполнения очереди или когда средний размер очереди превосходит `maxthresh_`
+
+```tcl
+set windowvstime [open wvst w]
+set qmon [$ns monitor-queue $node_(r0) $node_(r1) [open qm.out w]]
+[$ns link $node_(r0) $node_(r1)] queue-sample-timeout
+
+set redq [[$ns link $node_(r0) $node_(r1)] queue]
+$redq set qlim_ 75 150
+$redq set thresh_ 75
+$redq set maxthresh_ 150
+$redq set q_weight_ 0.002
+$redq set linterm_ 10
+$redq set drop-tail_ true
+
+set tchan_ [open all.q w]
+$redq trace curq_
+$redq trace ave_
+$redq attach $tchan_
+```
+
+### plotWindow.tcl
+
+В данном файле хранится процедура для формирование файла с данными о размере окна TCP.
+
+```tcl
+proc plotwindow {tcpsource file} {
+   global ns
+   set time 0.01
+   set now [$ns now]
+   set cwnd [$tcpsource set cwnd_]
+   puts $file "$now $cwnd"
+   $ns at [expr $now+$time] "plotwindow $tcpsource $file"
+}
+```
+
+### modeling.tcl
+
+Здесь мы храним наше модельное время, а именно запускаем `ftp` и процедуру [`plotWindow`](#plotWindow.tcl)
+
+```tcl
+for {set r 0} {$r < $n} {incr r} {
+        $ns at 0.0 "$ftp($r) start"
+        $ns at 1.0 "plotwindow $tcp($r) $windowvstime"
+        $ns at 20.0 "$ftp($r) stop"
+}
+
+$ns at 21.0 "finish"
+```
+
+### finish.tcl
+
+А это у нас завершающая процедура, которая генерирует необходимые файлы для построения графиков, закрывает файлы трассировки и запускает `xgraph` для отрисовки графиков динамики размера окна TPC и график динамики длины очереди и средней длины очереди.
+
+```tcl
+proc finish {} {
+   global ns nf
+   $ns flush-trace
+   close $nf
+   global tchan_
+   set awkCode {
+      {
+         if ($1 == "Q" && NF>2) {
+            print $2, $3 >> "temp.q";
+            set end $2
+         }
+         else if ($1 == "a" && NF>2)
+         print $2, $3 >> "temp.a";
+      }
+   }
+
+   set f [open temp.queue w]
+   puts $f "TitleText: RED"
+   puts $f "Device: Postscript"
+
+   if { [info exists tchan_] } {
+      close $tchan_
+   }
+
+   exec rm -f temp.q temp.a
+   exec touch temp.a temp.q
+
+   exec awk $awkCode all.q
+
+   puts $f \"queue
+   exec cat temp.q >@ $f
+   puts $f \n\"ave_queue
+   exec cat temp.a >@ $f
+   close $f
+
+   exec xgraph -bb -tk -x time -t "TCPRenoCWND" wvst &
+   exec xgraph -bb -tk -x time -y queue temp.queue &
+   exec nam out.nam &
+   exit 0
+}
+```
+
+### plot.sh
+
+Чтобы отрисовывать графики на GNUPlot (см. [@gnuplot_homepage;@wiki:Gnuplot]) напишем скрипт, который будет доставать данные из наших файлов и подставлять их в графики. Здесь мы задаем границы по оси абсцисс мы задаем промежуток. И отрисовываем три отдельных графика:
+
+ - график динамики длины очереди.
+
+ - график динамики средней длины очереди.
+
+ - график динамики размера окна TCP.
+
+```tcl
+!/usr/bin/gnuplot -persist
+set xrange [0:20]
+
+set terminal postscript eps
+set output "queues.eps"
+set xlabel "Time (s)"
+set ylabel "Queue Length"
+set title "RED Queue"
+plot "temp.q" with lines linestyle 1 lt 1 lw 2 title "Queue length"
+
+set terminal postscript eps
+set output "ave_queues.eps"
+set xlabel "Time (s)"
+set ylabel "Queue Length"
+set title "RED Queue"
+plot "temp.a" with lines linestyle 2 lt 3 lw 2 title "Average queue length"
+
+set terminal postscript eps
+set output "TCP.eps"
+set xlabel "Time (s)"
+set ylabel "Window size"
+set title "TCPVsWindow"
+plot "wvst" with lines linestyle 1 lt 1 lw 2 title "WvsT"
+```
+
+### Результат
+
+После выполнения моделирования при помощи `ns main.tcl`, а также запуска скрипта [`plot.sh`](#plot.sh) мы получим на выходе три файла формата EPS (Encapsulated PostScript), которые мы можем спокойно просматривать.
+
+ - изменение размера длины очереди 
+ 
+![&nbsp;](./files/queues.pdf){ width=70% margin=auto }
+
+ - изменение размера средней длины очереди
+
+![&nbsp;](./files/ave_queues.pdf){ width=70% margin=auto }
+ 
+ - изменение размера окна, так как мы задали потолок окна, то он его не будет превышать.
+
+![&nbsp;](./files/TCP.pdf){ width=70% margin=auto }
+
+
 
 # Список литературы{.unnumbered}
 
