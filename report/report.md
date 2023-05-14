@@ -259,10 +259,11 @@ RED не поддерживает состояние каждого потока
 Алгоритм ARED функционирует следующим образом. Для каждого интервала interval (параметр) в секундах, если $\hat{q}$ больше целевой (желаемой) $\hat{q_t}$ и $p_{max} \leqslant 0,5$, то $p_{max}$ увеличивается на некоторую величину $\alpha$; в противном случае, если $\hat{q}$ меньше целевой $\hat{q_t}$ и $p_{max}\geqslant0,01$, то $p_{max}$ уменьшается в $\beta$ раз:
 
 $$
-$p_{max} = \left\{ \begin{array}{c}
+p_{max} = \left\{ \begin{array}{c}
 p_{max}+\alpha, \ \hat{q}>\hat{q_{t}}, \ p_{max} \leqslant0,5 \\
 \beta * p_{max}, \ \hat{q}<\hat{q_{t}}, \ p_{max} \geqslant0,01 \\
-\end{array} \right.$
+\end{array} \right.
+$$
 
 где
 
@@ -293,8 +294,11 @@ $$
 
 где 
 
+
 $$
-q_{min}+0,48(q_{max}-q_{min}) < \hat{q_t} < q_{min}+0,52(q_{max}-q_{min})\\
+q_{min}+0,48(q_{max}-q_{min}) < \hat{q_t} < q_{min}+0,52(q_{max}-q_{min})
+$$
+$$
 \alpha=(0,25\frac{\hat{q}-\hat{q_t}}{\hat{q_t}})p_{max}, \ \beta=1-(0,17\frac{\hat{q}-\hat{q_t}}{\hat{q_t}-q_{min}})
 $$
 
